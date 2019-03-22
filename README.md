@@ -59,6 +59,8 @@ EventManager.RemoveAllListener(); //可以使用该方法全部移除
  }
 
 ```
+# 动画演示
+![](https://upload-images.jianshu.io/upload_images/3600713-b2ae5147fd58b5dd.gif?imageMogr2/auto-orient/strip)
 
 # 友情提示
 事件总线是静态的，所以请养成在 OnDestory 方法中移除事件的好习惯，总线是大家的，自己屁股自己擦，不留后患给大家。
