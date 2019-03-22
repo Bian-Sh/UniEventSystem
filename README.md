@@ -38,6 +38,7 @@ EventManager.RemoveAllListener(); //可以使用该方法全部移除
 ```
 
 > 4. 处理事件：
+
 继承 BaseEventArgs 实现自定义事件信息类，可以在事件中传递丰富的信息,但请进行必要的里氏转换哈。
 ```
  private void OnScriptMounted(BaseEventArgs obj)
