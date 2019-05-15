@@ -1,4 +1,5 @@
-﻿using System;
+﻿// 不要在 OnGUI() 里面使用 本EventManager ,因为 回收动作过于频繁，往往事件的实现还在执行时候 参数就被回收了
+using System;
 using System.Collections.Generic;
 using UnityEngine.SceneManagement;
 namespace zFrame.Event
@@ -10,13 +11,20 @@ namespace zFrame.Event
         /// 事件总线实例
         /// </summary>
         private static EventManager entity = null;
+        protected static readonly object m_staticSyncRoot = new object();
         public static EventManager Instance
         {
             get
             {
-                if (entity == null)
+                if (null == entity)
                 {
-                    entity = new EventManager();
+                    lock (m_staticSyncRoot)
+                    {
+                        if (null == entity)
+                        {
+                            entity = new EventManager();
+                        }
+                    }
                 }
                 return entity;
             }
@@ -26,15 +34,15 @@ namespace zFrame.Event
         /// <summary>
         /// 事件链
         /// </summary>
-        private Dictionary<Enum, List<Action<BaseEventArgs>>> eventEntitys = null;
+        private Dictionary<Enum, Action<BaseEventArgs>> listeners = null;//使用.Net 默认的 多播委托 Action  
         /// <summary>
         /// 是否中断事件分发,默认不中断
         /// </summary>
         public static bool Interrupt { get; internal set; } = false;
 
-
         private EventManager()
         {
+            this.Capacity = 60;
             InitEvent();
         }
 
@@ -43,13 +51,13 @@ namespace zFrame.Event
         /// </summary>
         /// <param name="_type">指定枚举项</param>
         /// <returns>事件链</returns>
-        private List<Action<BaseEventArgs>> GetEventList(Enum _type)
+        private Action<BaseEventArgs> GetEventList(Enum _type)
         {
-            if (!eventEntitys.ContainsKey(_type))
+            if (!listeners.ContainsKey(_type))
             {
-                eventEntitys.Add(_type, new List<Action<BaseEventArgs>>());
+                listeners.Add(_type, default(Action<BaseEventArgs>));
             }
-            return eventEntitys[_type];
+            return listeners[_type];
         }
         /// <summary>
         /// 添加事件
@@ -58,10 +66,30 @@ namespace zFrame.Event
         /// <param name="action">指定事件</param>
         private void AddEvent(Enum _type, Action<BaseEventArgs> action)
         {
-            List<Action<BaseEventArgs>> actions = GetEventList(_type);
-            if (!actions.Contains(action))
+            Action<BaseEventArgs> actions = GetEventList(_type);
+            if (null != action)
             {
-                actions.Add(action);
+                Delegate[] delegates = actions?.GetInvocationList();
+                if (null != delegates)
+                {
+                    if (!Array.Exists(delegates, v => v == (Delegate)action))
+                    {
+                        actions += action;
+                    }
+                    else
+                    {
+                        UnityEngine.Debug.LogWarningFormat("重复的事件监听：{0}.{1}", _type.GetType().Name, _type.ToString());
+                    }
+                }
+                else
+                {
+                    actions = action;
+                }
+                listeners[_type] = actions;
+            }
+            else
+            {
+                UnityEngine.Debug.LogWarning("指定添加的事件为 null ！");
             }
         }
         /// <summary>
@@ -71,11 +99,9 @@ namespace zFrame.Event
         /// <param name="args">事件参数</param>
         private void CallEvent(BaseEventArgs args)
         {
-            List<Action<BaseEventArgs>> actions = GetEventList(args.m_Type);
-            for (int i = actions.Count - 1; i >= 0; --i)
-            {
-                actions[i]?.Invoke(args);
-            }
+            Action<BaseEventArgs> actions = GetEventList(args.EventType);
+            actions?.Invoke(args);
+            Recycle(args); //One Shot Event 
         }
         /// <summary>
         /// 删除指定的事件
@@ -84,35 +110,65 @@ namespace zFrame.Event
         /// <param name="action">指定的事件</param>
         private void DelEvent(Enum _type, Action<BaseEventArgs> action)
         {
-            List<Action<BaseEventArgs>> actions = GetEventList(_type);
-            if (actions.Contains(action))
+            if (null != action)
             {
-                actions.Remove(action);
+                Action<BaseEventArgs> actions = GetEventList(_type);
+                if (null != action)
+                {
+                    actions -= action;
+                }
+                listeners[_type] = actions;
+            }
+            else
+            {
+                UnityEngine.Debug.LogWarning("指定移除的事件为 null ！");
             }
         }
         /// <summary>
-        /// 删除指定的事件
+        /// 删除指定的事件(写的这么多就知道不指定事件枚举不被建议了)
         /// </summary>
         /// <param name="action">指定的事件</param>
         private void DelEvent(Action<BaseEventArgs> action)
         {
-            if (eventEntitys.Count > 0)
+            if (null != action)
             {
-                foreach (List<Action<BaseEventArgs>> actions in eventEntitys.Values)
+                List<Action<BaseEventArgs>> actionsArr = new List<Action<BaseEventArgs>>(listeners.Values);
+                List<Enum> eventTypeArr = new List<Enum>(listeners.Keys);
+                Predicate<Action<BaseEventArgs>> predicate = v =>
                 {
-                    if (actions.Contains(action))
-                    {
-                        actions.Remove(action);
-                    }
+                    Delegate[] d = v?.GetInvocationList();
+                    return (null != d && Array.Exists(d, vv => vv == (Delegate)action));
+                };
+                int index = actionsArr.FindIndex(predicate);
+                if (index != -1)
+                {
+                    DelEvent(eventTypeArr[index], action);
+                }
+                else
+                {
+                    UnityEngine.Debug.LogWarning("移除的事件未曾注册过 ！");
                 }
             }
+            else
+            {
+                UnityEngine.Debug.LogWarning("指定移除的事件为 null ！");
+            }
+        }
+        /// <summary>
+        /// 删除指定事件类型的所有事件
+        /// </summary>
+        /// <param name="eventType">指定的事件类型</param>
+        private void DelEvent(Enum eventType)
+        {
+            listeners.Remove(eventType);
         }
         /// <summary>
         /// 初始化事件链
         /// </summary>
         private void InitEvent()
         {
-            eventEntitys = new Dictionary<Enum, List<Action<BaseEventArgs>>>();
+            recycled = new Dictionary<Type, Queue<BaseEventArgs>>();
+            listeners = new Dictionary<Enum, Action<BaseEventArgs>>();
         }
 
         #region//--------------------------StaticFunction-------------------------------
@@ -123,12 +179,7 @@ namespace zFrame.Event
         /// <param name="action">事件</param>
         public static void AddListener(Enum _type, Action<BaseEventArgs> action)
         {
-            if (null == entity)
-            {
-                entity = new EventManager();
-            }
-            //ValidCheck(_type); //取消事件枚举命名空间校验
-            entity.AddEvent(_type, action);
+            Instance.AddEvent(_type, action);
         }
         /// <summary>
         /// 事件分发
@@ -137,15 +188,11 @@ namespace zFrame.Event
         /// <param name="args">事件参数</param>
         public static void Invoke(BaseEventArgs args)
         {
-            if (null == entity)
-            {
-                entity = new EventManager();
-            }
             if (Interrupt)
             {
                 return;
             }
-            entity.CallEvent(args);
+            entity?.CallEvent(args);
         }
         /// <summary>
         /// 移除事件监听
@@ -154,10 +201,7 @@ namespace zFrame.Event
         /// <param name="action">事件</param>
         public static void DelListener(Enum _type, Action<BaseEventArgs> action)
         {
-            if (null != entity)
-            {
-                entity.DelEvent(_type, action);
-            }
+            entity?.DelEvent(_type, action);
         }
         /// <summary>
         /// 移除事件监听
@@ -166,37 +210,84 @@ namespace zFrame.Event
         /// <param name="action">事件</param>
         public static void DelListener(Action<BaseEventArgs> action)
         {
-            if (null != entity)
-            {
-                entity.DelEvent(action);
-            }
+            entity?.DelEvent(action);
+        }
+        /// <summary>
+        /// 移除指定类型的所有事件监听
+        /// </summary>
+        /// <param name="_type">事件类型</param>
+        public static void DelListener(Enum _type)
+        {
+            entity?.DelEvent(_type);
         }
         /// <summary>
         /// 移除所有事件
         /// </summary>
         public static void RemoveAllListener()
         {
-            if (null != entity)
-            {
-                entity.InitEvent();
-            }
+            entity?.InitEvent();
         }
-
-        /// <summary>
-        /// 事件枚举参数有效性检查
-        /// </summary>
-        [System.Obsolete("取消事件枚举校验，现在不限制枚举所在的命名空间")]
-        public static void ValidCheck(Enum _type)
-        {
-            if (_type.GetType().Namespace != "zFrame.Event")
-            {
-                string msg = _type.GetType().Namespace;
-                msg = "命名空间：" + (string.IsNullOrEmpty(msg) ? "无" : msg);
-                throw new ArgumentException(string.Format("事件系统(纠错):事件类型必须在事件系统中有定义！Tips【{0}】", msg));
-            }
-        }
-
-
         #endregion//--------------------------StaticFunction-------------------------------
+
+        #region  Poolable Extension Function 
+        internal Dictionary<Type, Queue<BaseEventArgs>> recycled; //
+        int Capacity { get; set; } //池子有多大
+        /// <summary>
+        /// 分配指定参数类型的实例
+        /// </summary>
+        /// <typeparam name="T">指定类型</typeparam>
+        /// <returns>分配的实例</returns>
+        public static T Allocate<T>() where T : BaseEventArgs, new()//分配
+        {
+            Type type = typeof(T);
+            Queue<BaseEventArgs> args;
+            if (Instance.recycled.TryGetValue(type, out args))
+            {
+                if (null != args && args.Count == Instance.Capacity)//回收使用最老
+                {
+                    T arg = args.Dequeue() as T;
+                    arg.Dispose();
+                    return arg;
+                }
+            }
+            return new T() as T;
+        }
+        /// <summary>
+        /// 回收参数类型的实例
+        /// </summary>
+        /// <param name="target">指定的实例</param>
+        void Recycle(BaseEventArgs target) //释放
+        {
+            Type type = target.GetType();
+            Queue<BaseEventArgs> args;
+            if (!Instance.recycled.TryGetValue(type, out args))
+            {
+                args = new Queue<BaseEventArgs>();
+            }
+            if (args.Count < Instance.Capacity && !args.Contains(target))
+            {
+                args.Enqueue(target);
+            }
+            else
+            {
+                target.Dispose();
+            }
+            Instance.recycled[type] = args;
+        }
+        #endregion
     }
+
+    #region Method extension for chained programming style
+    public static class EventManagerEx
+    {
+        /// <summary>
+        /// 使用该参数类型的实例分发事件
+        /// </summary>
+        /// <param name="args">参数实例</param>
+        public static void Invoke(this BaseEventArgs args)
+        {
+            EventManager.Invoke(args);
+        }
+    }
+    #endregion
 }
