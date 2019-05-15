@@ -1,5 +1,4 @@
-﻿// 不要在 OnGUI() 里面使用 本EventManager ,因为 回收动作过于频繁，往往事件的实现还在执行时候 参数就被回收了
-using System;
+﻿using System;
 using System.Collections.Generic;
 using UnityEngine.SceneManagement;
 namespace zFrame.Event
